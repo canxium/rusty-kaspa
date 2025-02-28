@@ -23,6 +23,7 @@ use crate::{
     processes::{coinbase::CoinbaseManager, transaction_validator::TransactionValidator},
 };
 use crossbeam_channel::{Receiver, Sender};
+use kaspa_core::info;
 use kaspa_consensus_core::{
     block::Block,
     blockstatus::BlockStatus::{self, StatusHeaderOnly, StatusInvalid},
@@ -44,6 +45,8 @@ use parking_lot::RwLock;
 use rayon::ThreadPool;
 use rocksdb::WriteBatch;
 use std::sync::{atomic::Ordering, Arc};
+
+use r2d2_postgres::{postgres::{error::SqlState, NoTls}, r2d2::Pool, PostgresConnectionManager};
 
 pub struct BlockBodyProcessor {
     // Channels
@@ -88,6 +91,8 @@ pub struct BlockBodyProcessor {
 
     /// Storage mass hardfork DAA score
     pub(crate) storage_mass_activation: ForkActivation,
+
+    pg_pool: Arc<Pool<PostgresConnectionManager<NoTls>>>,
 }
 
 impl BlockBodyProcessor {
@@ -104,6 +109,7 @@ impl BlockBodyProcessor {
         pruning_lock: SessionLock,
         notification_root: Arc<ConsensusNotificationRoot>,
         counters: Arc<ProcessingCounters>,
+        pg_pool: Arc<Pool<PostgresConnectionManager<NoTls>>>,
     ) -> Self {
         Self {
             receiver,
@@ -131,6 +137,8 @@ impl BlockBodyProcessor {
             notification_root,
             counters,
             storage_mass_activation: params.storage_mass_activation,
+
+            pg_pool: pg_pool,
         }
     }
 
@@ -208,6 +216,33 @@ impl BlockBodyProcessor {
         };
 
         self.commit_body(block.hash(), block.header.direct_parents(), block.transactions.clone());
+
+        if !block.transactions.is_empty() {
+            let mut client = self.pg_pool.get().unwrap();
+            let coinbase = &block.transactions[0];
+            let payload = &coinbase.payload;
+            let payload_str = String::from_utf8_lossy(payload);
+            if payload_str.contains("canxiuminer:") {
+                let timestamp = block.header.timestamp as i64;
+                let hash = block.header.hash.to_string();
+                info!("Found Canxium cross-mining tag in coinbase payload: {}", hash);
+                match client.execute(
+                    "INSERT INTO merge_blocks (block_hash, timestamp) VALUES ($1, $2)", &[&hash, &timestamp],
+                ) {
+                    Ok(_) => {}
+                    Err(e) => {
+                        // Check for unique constraint violation
+                        if let Some(code) = e.code() {
+                            if code != &SqlState::UNIQUE_VIOLATION {
+                                println!("Database error: {}", e);
+                            }
+                        } else {
+                            println!("Database Unknown error: {}", e);
+                        }
+                    }
+                };
+            }
+        }
 
         // Send a BlockAdded notification
         self.notification_root

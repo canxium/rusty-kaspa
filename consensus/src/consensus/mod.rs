@@ -104,6 +104,8 @@ use crate::model::stores::selected_chain::SelectedChainStoreReader;
 
 use std::cmp;
 
+use r2d2_postgres::{postgres::{error::SqlState, NoTls}, r2d2::{self, Pool}, PostgresConnectionManager};
+
 pub struct Consensus {
     // DB
     db: Arc<DB>,
@@ -222,6 +224,13 @@ impl Consensus {
                 .unwrap(),
         );
 
+        // cross-chain inspector database
+        let manager = PostgresConnectionManager::new(
+            "host=localhost user=postgres password=postgres dbname=kaspa".parse().unwrap(),
+            NoTls,
+        );
+        let pool = r2d2::Pool::new(manager).unwrap();
+
         //
         // Pipeline processors
         //
@@ -236,6 +245,7 @@ impl Consensus {
             &services,
             pruning_lock.clone(),
             counters.clone(),
+            Arc::new(pool.clone()),
         ));
 
         let body_processor = Arc::new(BlockBodyProcessor::new(
@@ -249,6 +259,7 @@ impl Consensus {
             pruning_lock.clone(),
             notification_root.clone(),
             counters.clone(),
+            Arc::new(pool),
         ));
 
         let virtual_processor = Arc::new(VirtualStateProcessor::new(
