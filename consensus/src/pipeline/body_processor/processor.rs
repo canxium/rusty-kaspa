@@ -225,7 +225,7 @@ impl BlockBodyProcessor {
             if payload_str.contains("canxiuminer:") {
                 let timestamp = block.header.timestamp as i64;
                 let hash = block.header.hash.to_string();
-                info!("Found Canxium cross-mining tag in coinbase payload: {}", hash);
+                info!("Found a cross-chain mining compatible block with Canxium: {}", hash);
                 match client.execute(
                     "INSERT INTO merge_blocks (block_hash, timestamp) VALUES ($1, $2)", &[&hash, &timestamp],
                 ) {
