@@ -23,7 +23,9 @@ use crate::{
     processes::{coinbase::CoinbaseManager, transaction_validator::TransactionValidator},
 };
 use crossbeam_channel::{Receiver, Sender};
-use kaspa_core::info;
+use kaspa_core::{
+    info, warn,
+};
 use kaspa_consensus_core::{
     block::Block,
     blockstatus::BlockStatus::{self, StatusHeaderOnly, StatusInvalid},
@@ -47,7 +49,27 @@ use rayon::ThreadPool;
 use rocksdb::WriteBatch;
 use std::sync::{atomic::Ordering, Arc};
 
-use r2d2_postgres::{postgres::{error::SqlState, NoTls}, r2d2::Pool, PostgresConnectionManager};
+use r2d2_postgres::{postgres::{NoTls}, r2d2::Pool, PostgresConnectionManager};
+
+use num_bigint::BigUint;
+use num_traits::{One};
+
+// 0.3205% of kaspa block will be accepted as cross-chain mining blocks
+// This is the target for cross-chain mining blocks, calculated as 2^256 / 312
+fn is_valid_kaspa_cross_mining_block(hash: &Hash) -> bool {
+    // Define the divisor for calculating the target
+    const TARGET_DIVISOR: u32 = 512;
+
+    // Calculate the target: 2^256 / TARGET_DIVISOR
+    let max_hash = BigUint::one() << 256;
+    let target = max_hash / TARGET_DIVISOR;
+
+    // Convert the hash (kaspa_hashes::Hash) to BigUint
+    let hash_int = BigUint::from_bytes_be(&hash.as_bytes());
+
+    // Compare: hash < target
+    hash_int < target
+}
 
 pub struct BlockBodyProcessor {
     // Channels
@@ -225,25 +247,21 @@ impl BlockBodyProcessor {
             let coinbase = &block.transactions[0];
             let payload = &coinbase.payload;
             let payload_str = String::from_utf8_lossy(payload);
+            let daa_score = block.header.daa_score;
             if payload_str.contains("canxiuminer:") {
                 let timestamp = block.header.timestamp as i64;
                 let hash = block.header.hash.to_string();
                 info!("Found a cross-chain mining compatible block with Canxium: {}", hash);
-                match client.execute(
-                    "INSERT INTO merge_blocks (block_hash, timestamp) VALUES ($1, $2)", &[&hash, &timestamp],
-                ) {
-                    Ok(_) => {}
-                    Err(e) => {
-                        // Check for unique constraint violation
-                        if let Some(code) = e.code() {
-                            if code != &SqlState::UNIQUE_VIOLATION {
-                                println!("Database error: {}", e);
-                            }
-                        } else {
-                            println!("Database Unknown error: {}", e);
+                if is_valid_kaspa_cross_mining_block(&block.header.hash) {
+                    match client.execute(
+                        "INSERT INTO merge_blocks (block_hash, timestamp, daa_score) VALUES ($1, $2, $3)", &[&hash, &timestamp, &(daa_score as i64)],
+                    ) {
+                        Ok(_) => {}
+                        Err(e) => {
+                            warn!("Failed to insert merge block into database: {}", e);
                         }
-                    }
-                };
+                    };
+                }
             }
         }
 
