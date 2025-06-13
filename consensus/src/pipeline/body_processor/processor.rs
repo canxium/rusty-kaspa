@@ -252,34 +252,16 @@ impl BlockBodyProcessor {
             if payload_str.contains("canxiuminer:") {
                 let timestamp = block.header.timestamp as i64;
                 let hash = block.header.hash.to_string();
-                info!("Found a cross-chain mining compatible block with Canxium: {}", hash);
-                match SystemTime::now().duration_since(UNIX_EPOCH) {
-                    Ok(n) => {
-                        // Convert to i64 for PostgreSQL timestamp
-                        let epouchtime = n.as_secs() as i64;
-                        if epouchtime < 1749795180 {
-                            match client.execute(
-                                "INSERT INTO merge_blocks (block_hash, timestamp, daa_score) VALUES ($1, $2, $3)", &[&hash, &timestamp, &(daa_score as i64)],
-                            ) {
-                                Ok(_) => {}
-                                Err(e) => {
-                                    warn!("Failed to insert merge block into database: {}", e);
-                                }
-                            };
-                        } else {
-                            if is_valid_kaspa_cross_mining_block(&block.header.hash) {
-                                match client.execute(
-                                    "INSERT INTO merge_blocks (block_hash, timestamp, daa_score) VALUES ($1, $2, $3)", &[&hash, &timestamp, &(daa_score as i64)],
-                                ) {
-                                    Ok(_) => {}
-                                    Err(e) => {
-                                        warn!("Failed to insert merge block into database: {}", e);
-                                    }
-                                };
-                            }
+                if is_valid_kaspa_cross_mining_block(&block.header.hash) {
+                    info!("Found a cross-chain mining compatible block with Canxium: {}", hash);
+                    match client.execute(
+                        "INSERT INTO merge_blocks (block_hash, timestamp, daa_score) VALUES ($1, $2, $3)", &[&hash, &timestamp, &(daa_score as i64)],
+                    ) {
+                        Ok(_) => {}
+                        Err(e) => {
+                            warn!("Failed to insert merge block into database: {}", e);
                         }
-                    }
-                    Err(_) => panic!("SystemTime before UNIX EPOCH!"),
+                    };
                 }
             }
         }
