@@ -23,6 +23,9 @@ use crate::{
     processes::{coinbase::CoinbaseManager, transaction_validator::TransactionValidator},
 };
 use crossbeam_channel::{Receiver, Sender};
+use kaspa_core::{
+    info, warn,
+};
 use kaspa_consensus_core::{
     block::Block,
     blockstatus::BlockStatus::{self, StatusHeaderOnly, StatusInvalid},
@@ -45,6 +48,29 @@ use parking_lot::RwLock;
 use rayon::ThreadPool;
 use rocksdb::WriteBatch;
 use std::sync::{atomic::Ordering, Arc};
+
+use r2d2_postgres::{postgres::{NoTls}, r2d2::Pool, PostgresConnectionManager};
+
+use num_bigint::BigUint;
+use num_traits::{One};
+use std::time::{SystemTime, UNIX_EPOCH};
+
+// 0.3205% of kaspa block will be accepted as cross-chain mining blocks
+// This is the target for cross-chain mining blocks, calculated as 2^256 / 312
+fn is_valid_kaspa_cross_mining_block(hash: &Hash) -> bool {
+    // Define the divisor for calculating the target
+    const TARGET_DIVISOR: u32 = 512;
+
+    // Calculate the target: 2^256 / TARGET_DIVISOR
+    let max_hash = BigUint::one() << 256;
+    let target = max_hash / TARGET_DIVISOR;
+
+    // Convert the hash (kaspa_hashes::Hash) to BigUint
+    let hash_int = BigUint::from_bytes_be(&hash.as_bytes());
+
+    // Compare: hash < target
+    hash_int < target
+}
 
 pub struct BlockBodyProcessor {
     // Channels
@@ -90,6 +116,8 @@ pub struct BlockBodyProcessor {
 
     /// Storage mass hardfork DAA score
     pub(crate) crescendo_activation: ForkActivation,
+
+    pg_pool: Arc<Pool<PostgresConnectionManager<NoTls>>>,
 }
 
 impl BlockBodyProcessor {
@@ -106,6 +134,7 @@ impl BlockBodyProcessor {
         pruning_lock: SessionLock,
         notification_root: Arc<ConsensusNotificationRoot>,
         counters: Arc<ProcessingCounters>,
+        pg_pool: Arc<Pool<PostgresConnectionManager<NoTls>>>,
     ) -> Self {
         Self {
             receiver,
@@ -134,6 +163,8 @@ impl BlockBodyProcessor {
             notification_root,
             counters,
             crescendo_activation: params.crescendo_activation,
+
+            pg_pool: pg_pool,
         }
     }
 
@@ -211,6 +242,29 @@ impl BlockBodyProcessor {
         };
 
         self.commit_body(block.hash(), block.header.direct_parents(), block.transactions.clone());
+
+        if !block.transactions.is_empty() {
+            let mut client = self.pg_pool.get().unwrap();
+            let coinbase = &block.transactions[0];
+            let payload = &coinbase.payload;
+            let payload_str = String::from_utf8_lossy(payload);
+            let daa_score = block.header.daa_score;
+            if payload_str.contains("canxiuminer:") {
+                let timestamp = block.header.timestamp as i64;
+                let hash = block.header.hash.to_string();
+                if is_valid_kaspa_cross_mining_block(&block.header.hash) {
+                    info!("Found a cross-chain mining compatible block with Canxium: {}", hash);
+                    match client.execute(
+                        "INSERT INTO merge_blocks (block_hash, timestamp, daa_score) VALUES ($1, $2, $3)", &[&hash, &timestamp, &(daa_score as i64)],
+                    ) {
+                        Ok(_) => {}
+                        Err(e) => {
+                            warn!("Failed to insert merge block into database: {}", e);
+                        }
+                    };
+                }
+            }
+        }
 
         // Send a BlockAdded notification
         self.notification_root

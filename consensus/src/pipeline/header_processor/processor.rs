@@ -50,6 +50,7 @@ use std::sync::{atomic::Ordering, Arc};
 
 use super::super::ProcessingCounters;
 
+use r2d2_postgres::{postgres::{error::SqlState, NoTls}, r2d2::Pool, PostgresConnectionManager};
 pub struct HeaderProcessingContext {
     pub hash: Hash,
     pub header: Arc<Header>,
@@ -163,6 +164,8 @@ pub struct HeaderProcessor {
 
     // Counters
     counters: Arc<ProcessingCounters>,
+
+    pg_pool: Arc<Pool<PostgresConnectionManager<NoTls>>>,
 }
 
 impl HeaderProcessor {
@@ -176,7 +179,9 @@ impl HeaderProcessor {
         services: &Arc<ConsensusServices>,
         pruning_lock: SessionLock,
         counters: Arc<ProcessingCounters>,
+        pg_pool: Arc<Pool<PostgresConnectionManager<NoTls>>>,
     ) -> Self {
+
         Self {
             receiver,
             body_sender,
@@ -215,6 +220,8 @@ impl HeaderProcessor {
             skip_proof_of_work: params.skip_proof_of_work,
             max_block_level: params.max_block_level,
             crescendo_activation: params.crescendo_activation,
+
+            pg_pool: pg_pool,
         }
     }
 
@@ -246,7 +253,6 @@ impl HeaderProcessor {
     fn queue_block(self: &Arc<HeaderProcessor>, task_id: TaskId) {
         if let Some(task) = self.task_manager.try_begin(task_id) {
             let res = self.process_header(&task);
-
             let dependent_tasks = self.task_manager.end(
                 task,
                 |task,

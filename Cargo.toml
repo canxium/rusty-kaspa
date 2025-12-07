@@ -271,6 +271,9 @@ tower-http = { version = "0.5.2", features = [
 tower = "0.5.1"
 chrono = "0.4.31"
 indexed_db_futures = "0.5.0"
+r2d2_postgres = "0.18.2"
+num-bigint = "0.4.6"
+
 # workflow dependencies that are not a part of core libraries
 
 # workflow-perf-monitor = { path = "../../../workflow-perf-monitor-rs" }

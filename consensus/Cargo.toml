@@ -43,6 +43,9 @@ serde.workspace = true
 smallvec.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
+r2d2_postgres.workspace = true
+num-bigint.workspace = true
+num-traits.workspace = true
 
 rand = { workspace = true, features = ["small_rng"] }
 
